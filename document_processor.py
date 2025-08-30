@@ -374,12 +374,13 @@ class DocumentProcessor:
             doc = SimpleDocTemplate(output_path, pagesize=letter)
             styles = getSampleStyleSheet()
             
-            # Custom styles
+            # Custom styles with reduced spacing
             title_style = ParagraphStyle(
                 'CustomTitle',
                 parent=styles['Title'],
                 fontSize=16,
-                spaceAfter=30,
+                spaceAfter=20,
+                spaceBefore=0,
                 alignment=1  # Center alignment
             )
             
@@ -387,8 +388,28 @@ class DocumentProcessor:
                 'CustomHeader',
                 parent=styles['Heading1'],
                 fontSize=14,
-                spaceAfter=12,
+                spaceAfter=8,
+                spaceBefore=0,
                 alignment=1
+            )
+            
+            # Create a custom normal style with controlled spacing
+            normal_style = ParagraphStyle(
+                'CustomNormal',
+                parent=styles['Normal'],
+                fontSize=10,
+                spaceAfter=4,
+                spaceBefore=0,
+                leading=12  # Line height
+            )
+            
+            section_style = ParagraphStyle(
+                'SectionHeader',
+                parent=styles['Heading2'],
+                fontSize=12,
+                spaceAfter=6,
+                spaceBefore=10,
+                leftIndent=0
             )
             
             story = []
@@ -396,17 +417,55 @@ class DocumentProcessor:
             # Add title and headers
             story.append(Paragraph("Time Charter Party", title_style))
             story.append(Paragraph("GOVERNMENT FORM", header_style))
-            story.append(Paragraph("Approved by the New York Produce Exchange", styles['Normal']))
-            story.append(Spacer(1, 20))
+            story.append(Paragraph("Approved by the New York Produce Exchange", normal_style))
+            story.append(Paragraph("November 6th, 1913 - Amended October 20th, 1921; August 6th, 1931; October 3rd, 1946", normal_style))
+            story.append(Spacer(1, 12))
             
-            # Split content and add paragraphs
-            paragraphs = content.split('\n\n')
-            for para_text in paragraphs:
-                if para_text.strip():
-                    # Clean up text for PDF
-                    clean_text = para_text.strip().replace('\n', ' ')
-                    story.append(Paragraph(clean_text, styles['Normal']))
-                    story.append(Spacer(1, 6))
+            # Process content more intelligently
+            lines = content.split('\n')
+            current_paragraph = ""
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    # Empty line - finish current paragraph
+                    if current_paragraph:
+                        self._add_pdf_paragraph(story, current_paragraph, normal_style, section_style)
+                        current_paragraph = ""
+                    continue
+                
+                # Skip summary markers
+                if line.startswith('==='):
+                    if current_paragraph:
+                        self._add_pdf_paragraph(story, current_paragraph, normal_style, section_style)
+                        current_paragraph = ""
+                    if 'SUMMARY OF CHANGES' in line:
+                        story.append(Spacer(1, 20))
+                        story.append(Paragraph("Summary of Changes", section_style))
+                    continue
+                
+                # Check for numbered clauses
+                if re.match(r'^\d+\.\s', line):
+                    if current_paragraph:
+                        self._add_pdf_paragraph(story, current_paragraph, normal_style, section_style)
+                        current_paragraph = ""
+                    story.append(Paragraph(line, section_style))
+                    continue
+                
+                # Accumulate regular content
+                if current_paragraph:
+                    current_paragraph += " " + line
+                else:
+                    current_paragraph = line
+                
+                # Break very long paragraphs
+                if len(current_paragraph) > 800:
+                    self._add_pdf_paragraph(story, current_paragraph, normal_style, section_style)
+                    current_paragraph = ""
+            
+            # Add any remaining content
+            if current_paragraph:
+                self._add_pdf_paragraph(story, current_paragraph, normal_style, section_style)
             
             doc.build(story)
             self.logger.info(f"PDF file saved to: {output_path}")
@@ -414,3 +473,18 @@ class DocumentProcessor:
         except Exception as e:
             self.logger.error(f"Error generating PDF: {str(e)}")
             raise
+    
+    def _add_pdf_paragraph(self, story, text, normal_style, section_style):
+        """Add a paragraph to the PDF story with appropriate formatting"""
+        if not text.strip():
+            return
+        
+        # Clean up text
+        text = text.strip()
+        text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+        
+        # Check if it's a special section
+        if text.startswith('That the') and len(text) > 50:
+            story.append(Paragraph(text, section_style))
+        else:
+            story.append(Paragraph(text, normal_style))
