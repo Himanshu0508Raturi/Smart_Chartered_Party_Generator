@@ -272,29 +272,71 @@ class DocumentProcessor:
                 raise ImportError("python-docx not available")
             doc = Document()
             
-            # Add title
+            # Add title and header
             title = doc.add_heading('Time Charter Party', 0)
-            # title.alignment = 1  # Center alignment - skip for compatibility
-            
-            # Add subtitle
             subtitle = doc.add_heading('GOVERNMENT FORM', level=1)
-            # subtitle.alignment = 1  # Skip for compatibility
-            
             sub_subtitle = doc.add_paragraph('Approved by the New York Produce Exchange')
-            # sub_subtitle.alignment = 1  # Skip for compatibility
+            date_line = doc.add_paragraph('November 6th, 1913 - Amended October 20th, 1921; August 6th, 1931; October 3rd, 1946')
             
+            # Add spacing
             doc.add_paragraph()
             
-            # Split content into paragraphs and add to document
-            paragraphs = content.split('\n\n')
-            for para_text in paragraphs:
-                if para_text.strip():
-                    # Handle different formatting for numbered clauses
-                    if re.match(r'^\s*\d+\.', para_text.strip()):
-                        p = doc.add_paragraph(para_text.strip())
-                        p.style = 'List Number'
-                    else:
-                        doc.add_paragraph(para_text.strip())
+            # Process the content more intelligently
+            lines = content.split('\n')
+            current_paragraph = ""
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    # Empty line - finish current paragraph and add spacing
+                    if current_paragraph:
+                        self._add_formatted_paragraph(doc, current_paragraph)
+                        current_paragraph = ""
+                    continue
+                
+                # Check for special sections
+                if line.startswith('==='):
+                    # Summary section
+                    if current_paragraph:
+                        self._add_formatted_paragraph(doc, current_paragraph)
+                        current_paragraph = ""
+                    if 'SUMMARY OF CHANGES' in line:
+                        doc.add_page_break()
+                        doc.add_heading('Summary of Changes', level=1)
+                    elif 'END SUMMARY' in line:
+                        doc.add_paragraph()
+                    continue
+                
+                # Check for numbered clauses (1., 2., etc.)
+                if re.match(r'^\d+\.\s', line):
+                    if current_paragraph:
+                        self._add_formatted_paragraph(doc, current_paragraph)
+                        current_paragraph = ""
+                    doc.add_heading(line, level=2)
+                    continue
+                
+                # Check for clause headers (That the...)
+                if line.startswith('That the') and len(line) > 50:
+                    if current_paragraph:
+                        self._add_formatted_paragraph(doc, current_paragraph)
+                        current_paragraph = ""
+                    doc.add_heading(line, level=3)
+                    continue
+                
+                # Regular content - accumulate in current paragraph
+                if current_paragraph:
+                    current_paragraph += " " + line
+                else:
+                    current_paragraph = line
+                
+                # If paragraph is getting too long, break it
+                if len(current_paragraph) > 500:
+                    self._add_formatted_paragraph(doc, current_paragraph)
+                    current_paragraph = ""
+            
+            # Add any remaining content
+            if current_paragraph:
+                self._add_formatted_paragraph(doc, current_paragraph)
             
             doc.save(output_path)
             self.logger.info(f"DOCX file saved to: {output_path}")
@@ -302,6 +344,27 @@ class DocumentProcessor:
         except Exception as e:
             self.logger.error(f"Error generating DOCX: {str(e)}")
             raise
+    
+    def _add_formatted_paragraph(self, doc, text):
+        """Add a formatted paragraph to the document"""
+        if not text.strip():
+            return
+        
+        # Clean up the text
+        text = text.strip()
+        
+        # Check if this looks like a list item
+        if re.match(r'^\d+\)\s|^[a-z]\)\s|^•\s|^-\s', text):
+            p = doc.add_paragraph(text, style='List Bullet')
+        else:
+            p = doc.add_paragraph(text)
+        
+        # Add some spacing after paragraphs
+        from docx.shared import Pt
+        try:
+            p.paragraph_format.space_after = Pt(6)
+        except:
+            pass  # Skip if formatting fails
     
     def generate_pdf(self, content: str, output_path: str):
         """Generate PDF file from merged content"""
