@@ -1,14 +1,26 @@
 import re
 import os
 import logging
+import signal
 from typing import Dict, List, Tuple, Any
-import pdfplumber
-from docx import Document
-from docx.shared import Inches
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
+try:
+    import pdfplumber
+    import PyPDF2
+    from docx import Document
+    from docx.shared import Inches
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    PDF_LIBS_AVAILABLE = True
+    
+    # Reduce logging level for PDF processing to prevent excessive output
+    logging.getLogger('pdfminer').setLevel(logging.ERROR)
+    logging.getLogger('pdfplumber').setLevel(logging.ERROR)
+    
+except ImportError as e:
+    logging.error(f"Missing required libraries: {e}")
+    PDF_LIBS_AVAILABLE = False
 
 class DocumentProcessor:
     """Handles document processing, text extraction, and merging operations"""
@@ -33,23 +45,49 @@ class DocumentProcessor:
             raise
     
     def _extract_text_from_pdf(self, file_path: str) -> str:
-        """Extract text from PDF using pdfplumber"""
-        text = ""
-        try:
-            with pdfplumber.open(file_path) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += page_text + "\n"
-        except Exception as e:
-            self.logger.error(f"Error extracting PDF text: {str(e)}")
-            raise
+        """Extract text from PDF using PyPDF2 (safer for complex PDFs)"""
+        if not PDF_LIBS_AVAILABLE:
+            raise ImportError("PDF processing libraries not available")
         
+        text = ""
+        
+        # Use PyPDF2 directly as it's more stable for complex PDFs
+        try:
+            if 'PyPDF2' not in globals():
+                raise ImportError("PyPDF2 not available")
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                total_pages = len(pdf_reader.pages)
+                self.logger.info(f"Processing PDF with {total_pages} pages")
+                
+                for page_num in range(total_pages):
+                    try:
+                        page = pdf_reader.pages[page_num]
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n"
+                            self.logger.debug(f"Extracted text from page {page_num + 1}")
+                        else:
+                            self.logger.warning(f"No text found on page {page_num + 1}")
+                    except Exception as page_error:
+                        self.logger.warning(f"Error extracting text from page {page_num + 1}: {str(page_error)}")
+                        continue
+                        
+        except Exception as pdf_error:
+            self.logger.error(f"PDF extraction failed: {str(pdf_error)}")
+            # Return a meaningful message instead of crashing
+            return f"PDF content could not be fully extracted. Error: {str(pdf_error)}\n\nPlease ensure the PDF contains extractable text and try again."
+        
+        if not text.strip():
+            return "No readable text found in PDF. The document may be image-based, password-protected, or corrupted."
+            
         return text
     
     def _extract_text_from_docx(self, file_path: str) -> str:
         """Extract text from DOCX file"""
         try:
+            if 'Document' not in globals():
+                raise ImportError("python-docx not available")
             doc = Document(file_path)
             text = ""
             for paragraph in doc.paragraphs:
@@ -74,7 +112,7 @@ class DocumentProcessor:
             'laycan': r'Laycan:\s*([^–\n]+)',
             'hire_rate': r'at\s+([\d.]+)\s*%\s*bhsi38',
             'period': r'About\s+(\d+)\s+to\s+about\s+(\d+)\s+months',
-            'optional_period': r'opt\s+about\s+(\d+)\s*–\s*about\s+(\d+)\s+months\s+at\s*\$\s*([\d,]+)',
+            'optional_period': r'opt\s+about\s+(\d+)\s*[–-]\s*about\s+(\d+)\s+months\s+at\s*\$\s*([\d,]+)',
             'redelivery_range': r'REDEL\s+DOP\s+1SP\s+WW\s+WITHIN\s+TRADING\s+LIMITS.*?(?=\+|$)',
             'bunkers_delivery': r'VLSFO\s+ABOUT\s+(\d+)\s+MT\s+AND\s+MGO\s+ABOUT\s+(\d+)\s+MT',
             'commission': r'Commission:\s*([\d.]+)\s*%?\s*address\s+commission',
@@ -87,15 +125,21 @@ class DocumentProcessor:
         for key, pattern in patterns.items():
             match = re.search(pattern, recap_text, re.IGNORECASE | re.DOTALL)
             if match:
-                if key == 'period':
-                    extracted_data[key] = f"{match.group(1)} to {match.group(2)} months"
-                elif key == 'optional_period':
-                    extracted_data[key] = f"{match.group(1)} to {match.group(2)} months at ${match.group(3)}"
-                elif key == 'bunkers_delivery':
-                    extracted_data['vlsfo_quantity'] = match.group(1)
-                    extracted_data['mgo_quantity'] = match.group(2)
-                else:
-                    extracted_data[key] = match.group(1).strip()
+                try:
+                    if key == 'period':
+                        extracted_data[key] = f"{match.group(1)} to {match.group(2)} months"
+                    elif key == 'optional_period':
+                        extracted_data[key] = f"{match.group(1)} to {match.group(2)} months at ${match.group(3)}"
+                    elif key == 'bunkers_delivery':
+                        extracted_data['vlsfo_quantity'] = match.group(1)
+                        extracted_data['mgo_quantity'] = match.group(2)
+                    elif match.groups():
+                        extracted_data[key] = match.group(1).strip()
+                    else:
+                        extracted_data[key] = match.group(0).strip()
+                except IndexError:
+                    # If group doesn't exist, use the full match
+                    extracted_data[key] = match.group(0).strip()
         
         # Extract trading exclusions
         trading_section = re.search(r'TRADING EXCLUSIONS(.*?)(?=\+|$)', recap_text, re.IGNORECASE | re.DOTALL)
@@ -207,23 +251,37 @@ class DocumentProcessor:
             'dry_docking', '', dd_clause, 'Added dry-docking clause'
         ))
         
+        # Add summary of changes section
+        summary_section = "\n\n=== SUMMARY OF CHANGES ===\n"
+        if changes:
+            summary_section += "The following modifications were made to the base Charter Party:\n\n"
+            for i, change in enumerate(changes, 1):
+                summary_section += f"{i}. {change['description']}\n"
+            summary_section += "\n=== END SUMMARY ===\n"
+        else:
+            summary_section += "No changes were made to the base Charter Party document.\n=== END SUMMARY ===\n"
+        
+        merged_text += summary_section
+        
         return merged_text, changes
     
     def generate_docx(self, content: str, output_path: str):
         """Generate DOCX file from merged content"""
         try:
+            if not PDF_LIBS_AVAILABLE or 'Document' not in globals():
+                raise ImportError("python-docx not available")
             doc = Document()
             
             # Add title
             title = doc.add_heading('Time Charter Party', 0)
-            title.alignment = 1  # Center alignment
+            # title.alignment = 1  # Center alignment - skip for compatibility
             
             # Add subtitle
             subtitle = doc.add_heading('GOVERNMENT FORM', level=1)
-            subtitle.alignment = 1
+            # subtitle.alignment = 1  # Skip for compatibility
             
             sub_subtitle = doc.add_paragraph('Approved by the New York Produce Exchange')
-            sub_subtitle.alignment = 1
+            # sub_subtitle.alignment = 1  # Skip for compatibility
             
             doc.add_paragraph()
             
@@ -248,6 +306,8 @@ class DocumentProcessor:
     def generate_pdf(self, content: str, output_path: str):
         """Generate PDF file from merged content"""
         try:
+            if not PDF_LIBS_AVAILABLE:
+                raise ImportError("reportlab not available")
             doc = SimpleDocTemplate(output_path, pagesize=letter)
             styles = getSampleStyleSheet()
             
