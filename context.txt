@@ -1,0 +1,186 @@
+1. Document Upload & Validation
+
+Goal: Ensure users provide the correct input files so processing can proceed smoothly.
+
+Step-by-step:
+
+File Input Interface:
+
+The web app provides a drag-and-drop or file selection interface.
+
+Users select two files:
+
+Base Charter Party (PDF): Contains the standard legal clauses.
+
+Fixture Recap (DOCX): Contains voyage-specific details like vessel name, cargo, ports, freight, etc.
+
+Validation:
+
+File type check: Only PDF for Base CP and DOCX for Recap are allowed.
+
+Size check: Each file must be ≤16 MB.
+
+Error handling: If validation fails, the system returns a clear message (e.g., “File too large” or “Incorrect format”).
+
+Temporary Storage:
+
+Files are saved to a temporary secure directory with unique identifiers (UUIDs) to avoid overwriting.
+
+2. Text Extraction Phase
+
+This phase reads and understands the contents of both documents.
+
+A. Base Charter Party Processing
+
+PDF Parsing with pdfplumber:
+
+Reads each page of the PDF.
+
+Extracts raw text while preserving page structure and spacing.
+
+Maintains sections, headings, and clause numbering.
+
+Text Cleaning & Structuring:
+
+Removes irrelevant line breaks or formatting artifacts.
+
+Identifies sections and clause boundaries using:
+
+Keywords (e.g., “Clause 1”, “Laycan”, “Freight”)
+
+Regular expressions for numbering patterns
+
+Stores each section in a structured format (like Python dictionaries) for easy replacement.
+
+B. Fixture Recap Processing
+
+DOCX Parsing with python-docx:
+
+Reads the recap content paragraph by paragraph or table by table.
+
+Extracts key fields relevant to the Charter Party:
+
+Vessel name
+
+Charter dates (laycan, delivery)
+
+Cargo type and quantity
+
+Freight rate
+
+Loading & discharge ports
+
+Special terms
+
+Field Normalization:
+
+Converts variations in phrasing into standard keys:
+
+e.g., “Port of Loading” → loading_port
+
+e.g., “Freight Rate” → freight_rate
+
+Ensures consistent mapping to the Base CP placeholders.
+
+3. Intelligent Field Mapping
+
+Goal: Automatically figure out which recap data goes into which section of the Charter Party.
+
+Step-by-step:
+
+Define a Mapping Table (Recap → Base CP):
+
+Recap Field	Base CP Placeholder
+Vessel Name	vessel_name
+Laycan Dates	charter_date
+Load Port	loading_port
+Discharge Port	discharging_port
+Freight Rate	freight_rate
+
+Pattern Matching & Keyword Search:
+
+System searches the Base CP for placeholders or context clues.
+
+For example:
+
+Finds “<<Vessel Name>>” or “The vessel…” to locate where to insert vessel_name.
+
+Uses regex and string similarity checks to handle variations in placeholder naming.
+
+Validation:
+
+Checks that every required field from the recap has a corresponding place in the Base CP.
+
+If a field is missing, it logs a warning.
+
+4. Document Merging Process
+
+Goal: Replace placeholders and generic clauses in Base CP with actual voyage data while preserving legal language.
+
+A. Smart Text Replacement
+
+Iterate over all mapped fields.
+
+For each field:
+
+Locate the placeholder or target clause in the Base CP text.
+
+Replace it with the corresponding value from the recap.
+
+Preserve:
+
+Paragraph formatting
+
+Legal wording around the inserted field
+
+Clause numbering and indentation
+
+B. Change Tracking
+
+Log every change:
+
+Field name
+
+Original value
+
+New value
+
+Timestamp
+
+Description (optional, e.g., “Inserted vessel name from recap”)
+
+Purpose:
+
+Provides an audit trail for legal review.
+
+Useful if errors need to be corrected later.
+
+5. Final Document Generation
+
+Goal: Produce professional, legally structured output.
+
+A. Structure Creation
+
+Combine the updated CP text with:
+
+Summary of changes (from change tracker)
+
+Proper headings and sections
+
+Page numbering if required
+
+Ensure the document is legally formatted, with clauses and sub-clauses intact.
+
+B. Multi-Format Output
+
+DOCX Output:
+
+Preserves headings, styles, and spacing
+
+Users can edit if needed before final approval
+
+PDF Output:
+
+Print-ready version
+
+Controlled spacing and fixed legal format
